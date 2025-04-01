@@ -23,6 +23,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application
 COPY server.py .
 
+# Add this line to your Dockerfile
+RUN pip install loguru
+
 # ---- Release Stage ----
 # Use the same slim base image
 FROM python:3.11-slim AS release
