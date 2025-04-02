@@ -7,6 +7,7 @@ Implements a ReAct agent interface for database interactions using MultiServerMC
 import asyncio
 import os
 import sys
+import subprocess
 from typing import List, Optional, Dict, Any
 import argparse
 from dataclasses import dataclass
@@ -78,20 +79,58 @@ class ModelManager:
 class DatabaseAgent:
     """Manages database interaction through ReAct agent."""
     
-    def __init__(self, model: ChatAnthropic, database_url: str):
+    def __init__(self, model: ChatAnthropic, database_url: str, use_docker: bool = True):
         self.model = model
         self.database_url = database_url
+        self.use_docker = use_docker
+        if self.use_docker:
+            self._ensure_docker_image()
         self.server_configs = self._create_server_config()
+
+    def _ensure_docker_image(self):
+        """Ensure the Docker image exists, building it if necessary."""
+        try:
+            # Check if image exists
+            result = subprocess.run(
+                ["docker", "image", "inspect", "mcp-postgres-py"], 
+                capture_output=True, 
+                text=True
+            )
+            
+            # If image doesn't exist, build it
+            if result.returncode != 0:
+                logger.info("Docker image 'mcp-postgres-py' not found. Building...")
+                build_result = subprocess.run(
+                    ["docker", "build", "-t", "mcp-postgres-py", "."],
+                    check=True
+                )
+                if build_result.returncode == 0:
+                    logger.info("Docker image built successfully")
+                else:
+                    logger.error("Failed to build Docker image")
+                    raise RuntimeError("Docker image build failed")
+        except Exception as e:
+            logger.error(f"Error with Docker image: {e}")
+            raise RuntimeError(f"Docker setup failed: {e}")
 
     def _create_server_config(self) -> Dict[str, ServerConfig]:
         """Create server configuration for MultiServerMCPClient."""
-        return {
-            "postgres_server": ServerConfig(
-                command=sys.executable,
-                args=["server.py", self.database_url],
-                transport="stdio"
-            ).__dict__
-        }
+        if self.use_docker:
+            return {
+                "postgres_server": ServerConfig(
+                    command="docker",
+                    args=["run", "-i", "--rm", "mcp-postgres-py", self.database_url],
+                    transport="stdio"
+                ).__dict__
+            }
+        else:
+            return {
+                "postgres_server": ServerConfig(
+                    command=sys.executable,
+                    args=["server.py", self.database_url],
+                    transport="stdio"
+                ).__dict__
+            }
 
     async def _setup_tools(self, client: MultiServerMCPClient):
         """Set up and validate tools from MCP client."""
@@ -164,6 +203,11 @@ async def main():
         "database_url",
         help="Database connection URL (postgresql://user:pass@host:port/dbname)"
     )
+    parser.add_argument(
+        "--no-docker",
+        action="store_true",
+        help="Run without Docker (use local Python instead)"
+    )
     args = parser.parse_args()
 
     try:
@@ -174,7 +218,7 @@ async def main():
             sys.exit(1)
 
         model = ModelManager.initialize_model()
-        agent = DatabaseAgent(model, args.database_url)
+        agent = DatabaseAgent(model, args.database_url, use_docker=not args.no_docker)
         await agent.run()
 
     except KeyboardInterrupt:
